@@ -33,6 +33,6 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/clip-relay:${{ steps.branch.outputs.name }}
-            ghcr.io/${{ github.repository }}/clip-relay:${{ github.sha }}
-            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}/clip-relay:latest', github.repository) || '' }}
+            ghcr.io/${{ github.repository }}:${{ steps.branch.outputs.name }}
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && format('ghcr.io/{0}:latest', github.repository) || '' }}
