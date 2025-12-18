@@ -64,7 +64,8 @@ CLIPBOARD_PASSWORD="change-me"
 - `STATIC_DIR` 可选；默认会自动探测 `.next-export/`、`out/` 等目录。
 - `AUTH_MAX_AGE_SECONDS` 控制登录 Cookie 的有效期（秒）。默认 7 天，设置更短/更长可按需调整。
 - SQLite 位于 `./data/custom.db`（首次启动自动创建）。请确保挂载卷对容器用户可写。
-  - 如果 `./data` 不可写（一些 PaaS/Kubernetes 默认只读根文件系统会出现），服务会尝试 `/data`，再退化到 `/tmp/clip-relay/data`（不持久化），除非你显式设置了 `DATA_DIR`/`DB_PATH`。
+  - 如果默认目录（本地为 `./data`，Docker 镜像内通常为 `/app/data`）不可写（一些 PaaS/Kubernetes 默认只读 rootfs 会出现），服务会尝试 `/data`。
+  - 若两者都不可写，服务会在启动阶段直接报错退出；请通过挂载可写卷并设置 `DATA_DIR`/`DB_PATH` 来明确数据位置。
 
 ### 本地构建镜像
 ```bash

@@ -882,7 +882,6 @@ fn resolve_storage_paths() -> anyhow::Result<(PathBuf, PathBuf, String)> {
     let candidates: Vec<(PathBuf, &'static str)> = vec![
         (default_data_dir, "auto:default"),
         (PathBuf::from("/data"), "auto:/data"),
-        (PathBuf::from("/tmp/clip-relay/data"), "auto:/tmp"),
     ];
 
     let mut last_err: Option<anyhow::Error> = None;

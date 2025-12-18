@@ -62,7 +62,8 @@ CLIPBOARD_PASSWORD="change-me"
 - `STATIC_DIR` is optional; by default the server tries `.next-export/`, `out/`, or `../.next-export`.
 - `AUTH_MAX_AGE_SECONDS` controls cookie lifetime. Defaults to 7 days; tune longer/shorter as needed.
 - The SQLite database lives under `./data/custom.db` (auto-created). Ensure the mounted volume is writable by the container user.
-  - If `./data` is not writable (common on some PaaS/Kubernetes setups with read-only root filesystem), the server will try `/data` and then fall back to `/tmp/clip-relay/data` (ephemeral) unless you explicitly set `DATA_DIR`/`DB_PATH`.
+  - If the default `./data` (or `/app/data` in the Docker image) is not writable (common on some PaaS/Kubernetes setups with read-only root filesystem), the server will try `/data`.
+  - If neither is writable, the server fails fast on startup; set `DATA_DIR`/`DB_PATH` to point at a writable mounted volume.
 
 ## Docker
 The provided `Dockerfile` builds a slim Rust runtime image including the static Next export. First-time empty volumes are auto-initialized by the server.
