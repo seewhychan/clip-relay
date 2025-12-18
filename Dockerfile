@@ -58,12 +58,15 @@ COPY --chown=0:0 --from=rust-builder /app/rust-server/target/release/clip-relay 
 RUN chmod a+rx /usr/local/bin/clip-relay \
  && mkdir -p /app/data /app/data/uploads /app/logs /app/tmp \
  && chgrp -R 0 /app/data /app/logs /app/tmp \
- && chmod -R 2775 /app/data /app/logs /app/tmp
+ && chmod -R 0777 /app/data /app/logs \
+ && chmod 1777 /app/tmp
 
 ENV RUST_LOG=info \
     STATIC_DIR=/app/.next-export \
     PORT=8087 \
     HOME=/tmp
+
+VOLUME ["/app/data"]
 
 EXPOSE 8087
 

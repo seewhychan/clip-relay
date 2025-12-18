@@ -41,6 +41,7 @@ struct AppState {
     password: Option<String>,
     db: Arc<Mutex<Connection>>,
     data_dir: PathBuf,
+    db_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,13 +62,15 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, _rx) = broadcast::channel::<ServerEvent>(1024);
     let password = env::var("CLIPBOARD_PASSWORD").ok();
-    let data_dir = ensure_data_dirs()?;
-    let db = init_db(&data_dir)?;
+    let (data_dir, db_path, storage_hint) = resolve_storage_paths()?;
+    tracing::info!(%storage_hint, data_dir=%data_dir.display(), db_path=%db_path.display(), "Storage initialized");
+    let db = init_db(&db_path)?;
     let state = AppState {
         tx,
         password,
         db: Arc::new(Mutex::new(db)),
         data_dir,
+        db_path,
     };
 
     let protected = Router::new()
@@ -265,8 +268,19 @@ fn build_cors() -> CorsLayer {
     }
 }
 
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "message": "Good!" }))
+async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let verbose = env::var("HEALTH_VERBOSE")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    if verbose {
+        Json(serde_json::json!({
+            "message": "Good!",
+            "dataDir": state.data_dir.display().to_string(),
+            "dbPath": state.db_path.display().to_string()
+        }))
+    } else {
+        Json(serde_json::json!({ "message": "Good!" }))
+    }
 }
 
 fn accept_br(headers: &HeaderMap) -> bool {
@@ -824,8 +838,72 @@ struct ClipboardItem {
     updated_at: String,
 }
 
-fn ensure_data_dirs() -> anyhow::Result<PathBuf> {
-    // Always prefer repository root's `data/` regardless of current working directory.
+fn resolve_storage_paths() -> anyhow::Result<(PathBuf, PathBuf, String)> {
+    // Explicit configuration (fail-fast if invalid/unwritable)
+    if let Ok(db_path) = env::var("DB_PATH") {
+        let db_path = db_path.trim();
+        if !db_path.is_empty() {
+            let db_path = PathBuf::from(db_path);
+            let data_dir = db_path
+                .parent()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("DB_PATH must include a parent directory"))?;
+            ensure_writable_storage(&data_dir, Some(&db_path), Some("DB_PATH"))?;
+            return Ok((data_dir, db_path, "explicit:DB_PATH".to_string()));
+        }
+    }
+
+    if let Ok(database_url) = env::var("DATABASE_URL") {
+        let database_url = database_url.trim();
+        if !database_url.is_empty() {
+            let db_path = parse_db_path_from_database_url(database_url)
+                .unwrap_or_else(|| PathBuf::from(database_url));
+            let data_dir = db_path
+                .parent()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must point to a file path"))?;
+            ensure_writable_storage(&data_dir, Some(&db_path), Some("DATABASE_URL"))?;
+            return Ok((data_dir, db_path, "explicit:DATABASE_URL".to_string()));
+        }
+    }
+
+    if let Ok(data_dir) = env::var("DATA_DIR") {
+        let data_dir = data_dir.trim();
+        if !data_dir.is_empty() {
+            let data_dir = PathBuf::from(data_dir);
+            let db_path = data_dir.join("custom.db");
+            ensure_writable_storage(&data_dir, Some(&db_path), Some("DATA_DIR"))?;
+            return Ok((data_dir, db_path, "explicit:DATA_DIR".to_string()));
+        }
+    }
+
+    // Auto-detect defaults, then fall back to known-writable locations.
+    let default_data_dir = default_data_dir()?;
+    let candidates: Vec<(PathBuf, &'static str)> = vec![
+        (default_data_dir, "auto:default"),
+        (PathBuf::from("/data"), "auto:/data"),
+        (PathBuf::from("/tmp/clip-relay/data"), "auto:/tmp"),
+    ];
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for (dir, hint) in candidates {
+        let db_path = dir.join("custom.db");
+        match ensure_writable_storage(&dir, Some(&db_path), None) {
+            Ok(()) => {
+                if hint != "auto:default" {
+                    tracing::warn!(data_dir=%dir.display(), %hint, "Default data dir is not writable; falling back (data may be ephemeral unless you mount a volume)");
+                }
+                return Ok((dir, db_path, hint.to_string()));
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("No writable storage directory found")))
+}
+
+fn default_data_dir() -> anyhow::Result<PathBuf> {
+    // Prefer repository root's `data/` regardless of current working directory.
     // Detect repo root by finding an ancestor containing `rust-server/Cargo.toml`.
     let cwd = env::current_dir()?;
     let mut repo_root: Option<PathBuf> = None;
@@ -836,14 +914,106 @@ fn ensure_data_dirs() -> anyhow::Result<PathBuf> {
             break;
         }
     }
-    let base = repo_root.unwrap_or(cwd);
-    let data_dir = base.join("data");
-    stdfs::create_dir_all(data_dir.join("uploads"))?;
-    Ok(data_dir)
+
+    if let Some(root) = repo_root {
+        return Ok(root.join("data"));
+    }
+
+    // Container-friendly default: prefer /app if present, otherwise use cwd.
+    let app_root = PathBuf::from("/app");
+    let base = if app_root.exists() { app_root } else { cwd };
+    Ok(base.join("data"))
 }
 
-fn init_db(data_dir: &StdPath) -> anyhow::Result<Connection> {
-    let db_path = data_dir.join("custom.db");
+fn parse_db_path_from_database_url(database_url: &str) -> Option<PathBuf> {
+    let s = database_url.trim();
+    let path = s
+        .strip_prefix("file:")
+        .or_else(|| s.strip_prefix("sqlite:"))?;
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
+
+fn ensure_writable_storage(
+    data_dir: &StdPath,
+    db_path: Option<&StdPath>,
+    configured_by: Option<&'static str>,
+) -> anyhow::Result<()> {
+    stdfs::create_dir_all(data_dir.join("uploads")).map_err(|e| {
+        if let Some(var) = configured_by {
+            anyhow::anyhow!(
+                "Failed to create storage directory (configured by {}): {} (data_dir={})",
+                var,
+                e,
+                data_dir.display()
+            )
+        } else {
+            anyhow::anyhow!("Failed to create storage directory: {} (data_dir={})", e, data_dir.display())
+        }
+    })?;
+
+    // Verify the directory is writable (SQLite needs to create journal/WAL files too).
+    let probe = data_dir.join(".write_probe");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = stdfs::remove_file(&probe);
+        }
+        Err(e) => {
+            if let Some(var) = configured_by {
+                return Err(anyhow::anyhow!(
+                    "Storage directory is not writable (configured by {}): {} (data_dir={})",
+                    var,
+                    e,
+                    data_dir.display()
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "Storage directory is not writable: {} (data_dir={})",
+                e,
+                data_dir.display()
+            ));
+        }
+    }
+
+    if let Some(db) = db_path {
+        let Some(parent) = db.parent() else {
+            return Err(anyhow::anyhow!("DB path must include a parent directory (db_path={})", db.display()));
+        };
+        // If DB lives outside data_dir, still ensure its directory is writable.
+        if parent != data_dir {
+            let probe = parent.join(".write_probe");
+            stdfs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!("Failed to create DB directory: {} (dir={})", e, parent.display())
+            })?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&probe)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "DB directory is not writable: {} (dir={}, db_path={})",
+                        e,
+                        parent.display(),
+                        db.display()
+                    )
+                })?;
+            let _ = stdfs::remove_file(&probe);
+        }
+    }
+
+    Ok(())
+}
+
+fn init_db(db_path: &StdPath) -> anyhow::Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.execute_batch(
         r"
