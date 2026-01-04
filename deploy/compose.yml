@@ -2,7 +2,7 @@ version: "3.9"
 
 # Quick-start Compose for Clip Relay
 # 1) Copy this file to your server (e.g., /srv/clip-relay/compose.yml)
-# 2) Create .env alongside with DATABASE_URL and CLIPBOARD_PASSWORD
+# 2) Create .env alongside with CLIPBOARD_PASSWORD (optional: DATA_DIR / DB_PATH)
 # 3) Choose the image tag: prefer sha-<commit> for reproducible deploys
 
 services:
@@ -25,5 +25,8 @@ services:
     pull_policy: always
 
 # .env example:
-# DATABASE_URL="file:../data/custom.db"
 # CLIPBOARD_PASSWORD="change-me"
+# Optional storage overrides:
+# DATA_DIR="/app/data"
+# DB_PATH="/app/data/custom.db"
+# DATABASE_URL="file:/app/data/custom.db"
